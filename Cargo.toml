@@ -1,0 +1,28 @@
+[package]
+name = "s3-media-endpoint-rs"
+version = "0.1.0"
+authors = ["Jesse Morgan <jesse@jesterpm.net>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+env_logger = "0.7"
+log = "0.4"
+
+actix-multipart = "0.2"
+actix-rt = "1.0.0"
+actix-web = "2.0.0"
+futures = "0.3"
+
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+base32 = "0.4"
+mime = "0.3"
+rand = "0.7"
+reqwest = { version = "0.10", features = ["json"] }
+rusoto_core = "0.45.0"
+rusoto_s3 = "0.45.0"
+
