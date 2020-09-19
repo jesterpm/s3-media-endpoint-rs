@@ -1,5 +1,4 @@
-use actix_web::client::{Client, ClientResponse};
-use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
+use actix_web::error::{ErrorBadRequest, ErrorNotFound, ErrorInternalServerError};
 use actix_web::http::header;
 use actix_web::{web, Error, HttpRequest, HttpResponse};
 
@@ -7,7 +6,37 @@ use image::imageops::FilterType;
 use image::GenericImageView;
 use image::ImageFormat;
 
+use futures::TryFutureExt;
+use tokio::io::AsyncReadExt;
+
+use rusoto_s3::{HeadObjectRequest, GetObjectRequest, S3Client, S3};
+
 use crate::SiteConfig;
+
+/// Build an HttpResponse for an AWS response
+macro_rules! response_for {
+    ($resp:expr) => {
+        {
+            let mut client_resp = HttpResponse::Ok();
+
+            // This will be the default cache-control header if the object doesn't have its own.
+            client_resp.set(header::CacheControl(vec![header::CacheDirective::MaxAge(
+                31557600u32,
+            )]));
+
+            // Copy all of the relevant S3 headers.
+            $resp.cache_control.map(|v| client_resp.set_header(header::CACHE_CONTROL, v));
+            $resp.content_disposition.map(|v| client_resp.set_header(header::CONTENT_DISPOSITION, v));
+            $resp.content_encoding.map(|v| client_resp.set_header(header::CONTENT_ENCODING, v));
+            $resp.content_language.map(|v| client_resp.set_header(header::CONTENT_LANGUAGE, v));
+            $resp.content_type.map(|v| client_resp.set_header(header::CONTENT_TYPE, v));
+            $resp.e_tag.map(|v| client_resp.set_header(header::ETAG, v));
+            $resp.last_modified.map(|v| client_resp.set_header(header::LAST_MODIFIED, v));
+
+            client_resp
+        }
+    };
+}
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -17,14 +46,79 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::resource("/media/{type}/{filename:.+}")
             .route(web::get().to(serve_file))
-            .route(web::head().to(serve_file)),
+            .route(web::head().to(head_file)),
     );
+}
+
+async fn head_file(
+    req: HttpRequest,
+    config: web::Data<SiteConfig>,
+    s3_client: web::Data<S3Client>,
+) -> Result<HttpResponse, Error> {
+
+    // Get the path paramaters
+    let media_type = req
+        .match_info()
+        .get("type")
+        .ok_or(ErrorBadRequest("Bad URI"))?;
+    let filename = req
+        .match_info()
+        .get("filename")
+        .ok_or(ErrorBadRequest("Bad URI"))?;
+
+    // Construct an S3 key
+    let key = format!("{}/{}", media_type, filename);
+    let resp = s3_client.head_object(HeadObjectRequest {
+        bucket: config.s3_bucket().to_owned(),
+        key,
+        ..Default::default()
+    })
+    .map_err(|e| ErrorInternalServerError(e))
+    .await?;
+
+    let mut client_resp = response_for!(resp);
+    // TODO: trick actix into returning the content-length.
+    Ok(client_resp.finish())
+}
+
+
+async fn serve_file(
+    req: HttpRequest,
+    config: web::Data<SiteConfig>,
+    s3_client: web::Data<S3Client>,
+) -> Result<HttpResponse, Error> {
+
+    // Get the path paramaters
+    let media_type = req
+        .match_info()
+        .get("type")
+        .ok_or(ErrorBadRequest("Bad URI"))?;
+    let filename = req
+        .match_info()
+        .get("filename")
+        .ok_or(ErrorBadRequest("Bad URI"))?;
+
+    // Construct an S3 key
+    let key = format!("{}/{}", media_type, filename);
+    let resp = s3_client.get_object(GetObjectRequest {
+        bucket: config.s3_bucket().to_owned(),
+        key,
+        ..Default::default()
+    })
+    .map_err(|e| ErrorInternalServerError(e))
+    .await?;
+
+    // If there is no payload, return a 404.
+    let data = resp.body.ok_or(ErrorNotFound("Not found"))?;
+
+    let mut client_resp = response_for!(resp);
+    Ok(client_resp.streaming(data))
 }
 
 async fn serve_photo(
     req: HttpRequest,
     config: web::Data<SiteConfig>,
-    client: web::Data<Client>,
+    s3_client: web::Data<S3Client>,
 ) -> Result<HttpResponse, Error> {
     let width = req
         .match_info()
@@ -41,85 +135,39 @@ async fn serve_photo(
         .get("filename")
         .ok_or(ErrorBadRequest("Bad URI"))?;
 
-    let new_url = format!("{}/photo/{}", config.media_url(), filename);
+    let key = format!("photo/{}", filename);
+    let resp = s3_client.get_object(GetObjectRequest {
+        bucket: config.s3_bucket().to_owned(),
+        key,
+        ..Default::default()
+    })
+    .map_err(|e| ErrorInternalServerError(e))
+    .await?;
 
-    let forwarded_req = client.request_from(new_url, req.head());
-    let forwarded_req = if let Some(addr) = req.head().peer_addr {
-        forwarded_req.header("x-forwarded-for", format!("{}", addr.ip()))
-    } else {
-        forwarded_req
-    };
-
-    let mut res = forwarded_req.send().await.map_err(Error::from)?;
-
-    // Check response code
-    if !res.status().is_success() {
-        return forward_response(res).await;
-    }
-
-    // Get the payload, at at least 20 MB of it...
-    let data = res.body().limit(20971520).await?;
+    let mut data = Vec::new();
+    resp.body
+        .ok_or(ErrorNotFound("Not found"))?
+        .into_async_read()
+        .read_to_end(&mut data)
+        .await?;
 
     // Resize the image
-    let (mime, new_data) = web::block(move || scale_image(data.as_ref(), width, height)).await
+    let (mime, new_data) = web::block(move || scale_image(data.as_ref(), width, height))
+        .await
         .map_err(|e| ErrorInternalServerError(e))?;
 
     // Send the new image to the client.
-    let mut client_resp = HttpResponse::build(res.status());
-    client_resp.set(header::CacheControl(vec![header::CacheDirective::MaxAge(
-        86400u32,
-    )]));
+    let mut client_resp = response_for!(resp);
     client_resp.set_header(header::CONTENT_TYPE, mime);
 
     Ok(client_resp.body(new_data))
 }
 
-async fn serve_file(
-    req: HttpRequest,
-    config: web::Data<SiteConfig>,
-    client: web::Data<Client>,
-) -> Result<HttpResponse, Error> {
-    let media_type = req
-        .match_info()
-        .get("type")
-        .ok_or(ErrorBadRequest("Bad URI"))?;
-    let filename = req
-        .match_info()
-        .get("filename")
-        .ok_or(ErrorBadRequest("Bad URI"))?;
-
-    let new_url = format!("{}/{}/{}", config.media_url(), media_type, filename);
-
-    let forwarded_req = client.request_from(new_url, req.head()).no_decompress();
-
-    let forwarded_req = if let Some(addr) = req.head().peer_addr {
-        forwarded_req.header("x-forwarded-for", format!("{}", addr.ip()))
-    } else {
-        forwarded_req
-    };
-
-    let res = forwarded_req.send().await.map_err(Error::from)?;
-
-    forward_response(res).await
-}
-
-async fn forward_response<S>(mut res: ClientResponse<S>) -> Result<HttpResponse, Error>
-where
-    S: futures::Stream<Item = std::result::Result<bytes::Bytes, actix_web::error::PayloadError>>
-        + std::marker::Unpin,
-{
-    let mut client_resp = HttpResponse::build(res.status());
-
-    // Remove `Connection` as per
-    // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Connection#Directives
-    for (header_name, header_value) in res.headers().iter().filter(|(h, _)| *h != "connection") {
-        client_resp.header(header_name.clone(), header_value.clone());
-    }
-
-    Ok(client_resp.body(res.body().limit(2147483648).await?))
-}
-
-fn scale_image(data: &[u8], width: u32, height: u32) -> Result<(&'static str, Vec<u8>), image::ImageError> {
+fn scale_image(
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(&'static str, Vec<u8>), image::ImageError> {
     // Determine the image format
     let fmt = image::guess_format(data)?;
 
@@ -143,8 +191,7 @@ fn scale_image(data: &[u8], width: u32, height: u32) -> Result<(&'static str, Ve
     };
 
     let mut new_data = Vec::new();
-    scaled
-        .write_to(&mut new_data, fmt)?; // ImageOutputFormat::Jpeg(128))
+    scaled.write_to(&mut new_data, fmt)?;
 
     Ok((mime_for_image(fmt), new_data))
 }

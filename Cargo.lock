@@ -1931,6 +1931,7 @@ dependencies = [
  "rusoto_s3",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

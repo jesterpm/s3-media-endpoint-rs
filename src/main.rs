@@ -15,14 +15,22 @@ mod oauth;
 pub struct SiteConfig {
     bind: String,
 
+    media_url: String,
     token_endpoint: String,
     s3_bucket: String,
-    media_url: String,
+
+    default_width: u32,
+    default_height: u32,
 }
 
 impl SiteConfig {
     pub fn bind(&self) -> &str {
         &self.bind
+    }
+
+    /// Base URL for serving files
+    pub fn media_url(&self) -> &str {
+        &self.media_url
     }
 
     /// The URI to use to validate an access token.
@@ -35,9 +43,12 @@ impl SiteConfig {
         &self.s3_bucket
     }
 
-    /// Base URL for S3 bucket assets.
-    pub fn media_url(&self) -> &str {
-        &self.media_url
+    pub fn default_width(&self) -> u32 {
+        self.default_width
+    }
+
+    pub fn default_height(&self) -> u32 {
+        self.default_height
     }
 }
 
@@ -51,6 +62,8 @@ async fn main() -> std::io::Result<()> {
         s3_bucket: std::env::var("S3_BUCKET").expect("Expected S3_BUCKET env var"),
         media_url: std::env::var("MEDIA_URL").expect("Expected MEDIA_URL env var"),
         token_endpoint: std::env::var("TOKEN_ENDPOINT").expect("Expected TOKEN_ENDPOINT env var"),
+        default_width: std::env::var("DEFAULT_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1000),
+        default_height: std::env::var("DEFAULT_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
     };
 
     let bind = site_config.bind().to_string();

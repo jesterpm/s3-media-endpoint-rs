@@ -74,17 +74,13 @@ fn random_id() -> String {
     format!("{}-{}", time_part, random_part)
 }
 
-pub async fn handle_upload(req: HttpRequest, mut payload: Multipart) -> HttpResponse {
-    let site = req
-        .app_data::<web::Data<SiteConfig>>()
-        .expect("Missing SiteConfig?");
-    let s3_client = req
-        .app_data::<web::Data<S3Client>>()
-        .expect("Missing S3Client?");
-    let verification_service = req
-        .app_data::<web::Data<oauth::VerificationService>>()
-        .expect("Missing VerificationService?");
-
+pub async fn handle_upload(
+    req: HttpRequest,
+    mut payload: Multipart,
+    site: web::Data<SiteConfig>,
+    s3_client: web::Data<S3Client>,
+    verification_service: web::Data<oauth::VerificationService>,
+) -> HttpResponse {
     let auth_header = match req
         .headers()
         .get(header::AUTHORIZATION)
@@ -121,12 +117,16 @@ pub async fn handle_upload(req: HttpRequest, mut payload: Multipart) -> HttpResp
 
         // This will be the key in S3.
         let key = match suffix {
-            Some(ext) => format!("{}/{}{}{}", classification, random_id(), sep, ext),
-            None => format!("{}/{}", classification, random_id()),
+            Some(ext) => format!("{}{}{}", random_id(), sep, ext),
+            None => format!("{}", random_id()),
         };
 
         // This will be the publicly accessible URL for the file.
-        let url = format!("{}/{}", site.media_url, key);
+        let url = if classification == "photo" {
+            format!("{}/photo/{}x{}/{}", site.media_url(), site.default_width(), site.default_height(), key)
+        } else {
+            format!("{}/{}/{}", site.media_url(), classification, key)
+        };
 
         let mut metadata: HashMap<String, String> = HashMap::new();
         metadata.insert(
@@ -146,7 +146,7 @@ pub async fn handle_upload(req: HttpRequest, mut payload: Multipart) -> HttpResp
 
         let put_request = PutObjectRequest {
             bucket: site.s3_bucket().to_owned(),
-            key,
+            key: format!("{}/{}", classification, key),
             body: Some(body.into()),
             metadata: Some(metadata),
             content_type: Some(content_type.to_string()),
@@ -156,8 +156,7 @@ pub async fn handle_upload(req: HttpRequest, mut payload: Multipart) -> HttpResp
         match s3_client.put_object(put_request).await {
             Ok(_) => {
                 return HttpResponse::Created()
-                    // Note: header must have a big L
-                    .header("Location", url)
+                    .header(header::LOCATION, url)
                     .finish();
             }
             Err(e) => return HttpResponse::InternalServerError().body(format!("{}", e)),

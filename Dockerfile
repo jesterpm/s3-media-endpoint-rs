@@ -10,7 +10,7 @@ WORKDIR /usr/src
 RUN USER=root cargo new s3-media-endpoint-rs
 WORKDIR /usr/src/s3-media-endpoint-rs
 COPY Cargo.toml Cargo.lock ./
-RUN cargo install --path .
+#RUN cargo install --path .
 
 # Copy the source and build the application.
 COPY src ./src
