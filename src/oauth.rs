@@ -1,5 +1,9 @@
+use actix_web::client::Client;
+use actix_web::error::Error;
+use actix_web::http::{header, StatusCode};
+use actix_web::ResponseError;
+use derive_more::Display;
 use futures::{FutureExt, TryFutureExt};
-use reqwest::header;
 use serde::{Deserialize, Serialize};
 
 /// Representation of an OAuth Access Token
@@ -27,7 +31,7 @@ impl AccessToken {
 /// Verification Service takes an Authorization header and checks if it's valid.
 pub struct VerificationService {
     token_endpoint: String,
-    client: reqwest::Client,
+    client: Client,
 }
 
 impl VerificationService {
@@ -37,7 +41,7 @@ impl VerificationService {
     {
         VerificationService {
             token_endpoint: token_endpoint.into(),
-            client: reqwest::Client::new(),
+            client: Client::new(),
         }
     }
 
@@ -46,8 +50,36 @@ impl VerificationService {
             .get(&self.token_endpoint)
             .header(header::AUTHORIZATION, auth_token)
             .send()
-            .map(|res| res.and_then(|r| r.error_for_status()))
-            .and_then(|resp| resp.json())
+            .map_err(Error::from)
+            .map(|res| {
+                res.and_then(|r| {
+                    if r.status().is_success() {
+                        Ok(r)
+                    } else if r.status() == StatusCode::UNAUTHORIZED {
+                        Err(VerificationError::Unauthenticated.into())
+                    } else {
+                        Err(VerificationError::InternalError(
+                            r.status()
+                                .canonical_reason()
+                                .unwrap_or("Unknown Error")
+                                .to_string(),
+                        )
+                        .into())
+                    }
+                })
+            })
+            .map_err(Error::from)
+            .and_then(|mut resp| resp.json().map_err(Error::from))
             .await
     }
 }
+
+#[derive(Display, Debug)]
+pub enum VerificationError {
+    #[display(fmt = "Unauthenticated")]
+    Unauthenticated,
+    #[display(fmt = "AuthServer Error")]
+    InternalError(String),
+}
+
+impl ResponseError for VerificationError {}
