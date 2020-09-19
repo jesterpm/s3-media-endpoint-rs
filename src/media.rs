@@ -60,39 +60,16 @@ async fn serve_photo(
     // Get the payload, at at least 20 MB of it...
     let data = res.body().limit(20971520).await?;
 
-    // Determine the image format
-    let fmt = image::guess_format(data.as_ref()).map_err(|e| ErrorInternalServerError(e))?;
-
-    // Parse the image
-    let img = image::load_from_memory_with_format(data.as_ref(), fmt)
+    // Resize the image
+    let (mime, new_data) = web::block(move || scale_image(data.as_ref(), width, height)).await
         .map_err(|e| ErrorInternalServerError(e))?;
 
-    let (orig_width, orig_height) = img.dimensions();
-
-    let scaled = if width < orig_width && height < orig_height {
-        // Take the largest size that maintains the aspect ratio
-        let ratio = orig_width as f64 / orig_height as f64;
-        let (new_width, new_height) = if width > height {
-            (width, (width as f64 / ratio) as u32)
-        } else {
-            ((height as f64 * ratio) as u32, height)
-        };
-        img.resize(new_width, new_height, FilterType::CatmullRom)
-    } else {
-        // We're not going to scale up images.
-        img
-    };
-
-    let mut new_data = Vec::new();
-    scaled
-        .write_to(&mut new_data, fmt) // ImageOutputFormat::Jpeg(128))
-        .map_err(|e| ErrorInternalServerError(e))?;
-
+    // Send the new image to the client.
     let mut client_resp = HttpResponse::build(res.status());
     client_resp.set(header::CacheControl(vec![header::CacheDirective::MaxAge(
         86400u32,
     )]));
-    client_resp.set_header(header::CONTENT_TYPE, mime_for_image(fmt));
+    client_resp.set_header(header::CONTENT_TYPE, mime);
 
     Ok(client_resp.body(new_data))
 }
@@ -140,6 +117,36 @@ where
     }
 
     Ok(client_resp.body(res.body().limit(2147483648).await?))
+}
+
+fn scale_image(data: &[u8], width: u32, height: u32) -> Result<(&'static str, Vec<u8>), image::ImageError> {
+    // Determine the image format
+    let fmt = image::guess_format(data)?;
+
+    // Parse the image
+    let img = image::load_from_memory_with_format(data, fmt)?;
+
+    let (orig_width, orig_height) = img.dimensions();
+
+    let scaled = if width < orig_width && height < orig_height {
+        // Take the largest size that maintains the aspect ratio
+        let ratio = orig_width as f64 / orig_height as f64;
+        let (new_width, new_height) = if width > height {
+            (width, (width as f64 / ratio) as u32)
+        } else {
+            ((height as f64 * ratio) as u32, height)
+        };
+        img.resize(new_width, new_height, FilterType::CatmullRom)
+    } else {
+        // We're not going to scale up images.
+        img
+    };
+
+    let mut new_data = Vec::new();
+    scaled
+        .write_to(&mut new_data, fmt)?; // ImageOutputFormat::Jpeg(128))
+
+    Ok((mime_for_image(fmt), new_data))
 }
 
 fn mime_for_image(fmt: ImageFormat) -> &'static str {
