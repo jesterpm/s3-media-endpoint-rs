@@ -24,6 +24,9 @@ macro_rules! response_for {
                 31557600u32,
             )]));
 
+            // Allow CORS
+            client_resp.set_header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+
             // Copy all of the relevant S3 headers.
             $resp.cache_control.map(|v| client_resp.set_header(header::CACHE_CONTROL, v));
             $resp.content_disposition.map(|v| client_resp.set_header(header::CONTENT_DISPOSITION, v));

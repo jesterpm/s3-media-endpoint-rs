@@ -1,5 +1,5 @@
 # Based on https://alexbrand.dev/post/how-to-package-rust-applications-into-minimal-docker-containers/
-FROM rust:1.46.0 AS build
+FROM rust:1.54.0 AS build
 
 MAINTAINER Jesse Morgan <jesse@jesterpm.net>
 
