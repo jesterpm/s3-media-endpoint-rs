@@ -1,23 +1,18 @@
+use actix_middleware_rfc7662::{RequireAuthorization, RequireScope};
 use actix_multipart::Multipart;
 use actix_web::http::header;
-use actix_web::{web, HttpRequest, HttpResponse};
-
+use actix_web::{post, web, HttpRequest, HttpResponse};
 use chrono::Utc;
-
 use futures::{StreamExt, TryStreamExt};
-
+use oauth2::TokenIntrospectionResponse;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-
 use rusoto_s3::{PutObjectRequest, S3Client, S3};
-
 use serde::{Deserialize, Serialize};
-
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::iter;
 
-use crate::oauth;
 use crate::SiteConfig;
 
 // To make the timepart shorter, we'll offset it with a custom epoch.
@@ -53,6 +48,14 @@ impl MicropubError {
     }
 }
 
+/// The scope we require to allow uploads.
+pub struct MediaScope;
+impl RequireScope for MediaScope {
+    fn scope() -> &'static str {
+        "media"
+    }
+}
+
 fn random_id() -> String {
     let now = Utc::now();
 
@@ -74,37 +77,20 @@ fn random_id() -> String {
     format!("{}-{}", time_part, random_part)
 }
 
+#[post("/micropub/media")]
 pub async fn handle_upload(
-    req: HttpRequest,
+    auth: RequireAuthorization<MediaScope>,
     mut payload: Multipart,
     site: web::Data<SiteConfig>,
     s3_client: web::Data<S3Client>,
-    verification_service: web::Data<oauth::VerificationService>,
 ) -> HttpResponse {
-    let auth_header = match req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|s| s.to_str().ok())
-    {
-        Some(auth_header) => auth_header,
-        None => return HttpResponse::Unauthorized().json(MicropubError::new("unauthorized")),
-    };
-
-    let access_token = match verification_service.validate(auth_header).await {
-        Ok(token) => token,
-        Err(e) => {
-            return HttpResponse::Unauthorized()
-                .json(MicropubError::with_description("unauthorized", e))
-        }
-    };
-
-    if !access_token.scopes().any(|s| s == "media") {
+    if auth.introspection().username() != Some(site.allowed_username()) {
         return HttpResponse::Unauthorized().json(MicropubError::new("unauthorized"));
     }
 
     // iterate over multipart stream
     if let Ok(Some(field)) = payload.try_next().await {
-        let content_disp = field.content_disposition().unwrap();
+        let content_disp = field.content_disposition();
         let content_type = field.content_type().clone();
         let filename = content_disp.get_filename();
         let ext = filename.and_then(|f| f.rsplit('.').next());
@@ -123,17 +109,24 @@ pub async fn handle_upload(
 
         // This will be the publicly accessible URL for the file.
         let url = if classification == "photo" {
-            format!("{}/photo/{}x{}/{}", site.media_url(), site.default_width(), site.default_height(), key)
+            format!(
+                "{}/media/photo/{}x{}/{}",
+                site.media_url(),
+                site.default_width(),
+                site.default_height(),
+                key
+            )
         } else {
-            format!("{}/{}/{}", site.media_url(), classification, key)
+            format!("{}/media/{}/{}", site.media_url(), classification, key)
         };
 
         let mut metadata: HashMap<String, String> = HashMap::new();
-        metadata.insert(
-            "client-id".to_string(),
-            access_token.client_id().to_string(),
-        );
-        metadata.insert("author".to_string(), access_token.me().to_string());
+        if let Some(client_id) = auth.introspection().client_id() {
+            metadata.insert("client-id".to_string(), client_id.to_string());
+        }
+        if let Some(username) = auth.introspection().username() {
+            metadata.insert("author".to_string(), username.to_string());
+        }
         if let Some(f) = filename {
             metadata.insert("filename".to_string(), f.to_string());
         }
@@ -156,7 +149,7 @@ pub async fn handle_upload(
         match s3_client.put_object(put_request).await {
             Ok(_) => {
                 return HttpResponse::Created()
-                    .header(header::LOCATION, url)
+                    .insert_header((header::LOCATION, url))
                     .finish();
             }
             Err(e) => return HttpResponse::InternalServerError().body(format!("{}", e)),

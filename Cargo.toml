@@ -7,25 +7,28 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-env_logger = "0.7"
+dotenv = "0.15"
+env_logger = "0.9"
 log = "0.4"
 
-actix-multipart = "0.2"
-actix-rt = "1.0.0"
-actix-web = { version = "2.0.0", features = ["openssl"] }
-bytes = "0.5"
+actix-multipart = "0.4"
+actix-web = { version = "4", features = ["openssl"] }
+bytes = "1.1"
 futures = "0.3"
-tokio = "0.2"
+tokio = "1"
 
 chrono = { version = "0.4", features = ["serde"] }
-derive_more = "0.99.9"
+derive_more = "0.99"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+actix-middleware-rfc7662 = "0.1"
+oauth2 = "4"
 
 base32 = "0.4"
 mime = "0.3"
 rand = "0.7"
-rusoto_core = "0.45.0"
-rusoto_s3 = "0.45.0"
+rusoto_core = "0.47"
+rusoto_s3 = "0.47"
 
 image = "0.23"
