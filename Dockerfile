@@ -1,5 +1,5 @@
 # Based on https://alexbrand.dev/post/how-to-package-rust-applications-into-minimal-docker-containers/
-FROM rust:1.54.0 AS build
+FROM rust:1.57.0 AS build
 
 MAINTAINER Jesse Morgan <jesse@jesterpm.net>
 
@@ -10,14 +10,14 @@ WORKDIR /usr/src
 RUN USER=root cargo new s3-media-endpoint-rs
 WORKDIR /usr/src/s3-media-endpoint-rs
 COPY Cargo.toml Cargo.lock ./
-#RUN cargo install --path .
+RUN cargo build --release
 
 # Copy the source and build the application.
 COPY src ./src
 RUN cargo install --path .
 
 # Now build the deployment image.
-FROM debian:buster-slim
+FROM debian:stable-slim
 # RUN apt-get update && apt-get install -y extra-runtime-dependencies && rm -rf /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y libssl1.1 ca-certificates
 COPY --from=build /usr/local/cargo/bin/s3-media-endpoint-rs .
