@@ -1,9 +1,12 @@
+use std::io::Cursor;
+
 use actix_web::error::{ErrorBadRequest, ErrorInternalServerError, ErrorNotFound};
 use actix_web::http::header;
 use actix_web::{get, head, web, Error, HttpRequest, HttpResponse};
 
 use image::imageops::FilterType;
-use image::GenericImageView;
+use image::metadata::Orientation;
+use image::{GenericImageView, DynamicImage, ImageReader, ImageDecoder};
 use image::ImageFormat;
 
 use futures::TryFutureExt;
@@ -183,8 +186,13 @@ fn scale_image(
     // Determine the image format
     let fmt = image::guess_format(data)?;
 
-    // Parse the image
-    let img = image::load_from_memory_with_format(data, fmt)?;
+    // Grab the orientation
+    let mut decoder = ImageReader::with_format(Cursor::new(data), fmt).into_decoder()?;
+    let orientation = decoder.orientation()
+        .unwrap_or(Orientation::NoTransforms);
+
+    let mut img = DynamicImage::from_decoder(decoder)?;
+    img.apply_orientation(orientation);
 
     let (orig_width, orig_height) = img.dimensions();
 
@@ -203,7 +211,7 @@ fn scale_image(
     };
 
     let mut new_data = Vec::new();
-    scaled.write_to(&mut new_data, fmt)?;
+    scaled.write_to(&mut Cursor::new(&mut new_data), fmt)?;
 
     Ok((mime_for_image(fmt), new_data))
 }

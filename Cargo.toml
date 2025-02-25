@@ -1,6 +1,6 @@
 [package]
 name = "s3-media-endpoint-rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jesse Morgan <jesse@jesterpm.net>"]
 edition = "2018"
 
@@ -31,4 +31,4 @@ rand = "0.7"
 rusoto_core = "0.47"
 rusoto_s3 = "0.47"
 
-image = "0.23"
+image = "0.25"
