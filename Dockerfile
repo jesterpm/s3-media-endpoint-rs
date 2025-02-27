@@ -1,5 +1,5 @@
 # Based on https://alexbrand.dev/post/how-to-package-rust-applications-into-minimal-docker-containers/
-FROM rust:1.57.0 AS build
+FROM rust:1.85.0 AS build
 
 MAINTAINER Jesse Morgan <jesse@jesterpm.net>
 
@@ -19,7 +19,7 @@ RUN cargo install --path .
 # Now build the deployment image.
 FROM debian:stable-slim
 # RUN apt-get update && apt-get install -y extra-runtime-dependencies && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y libssl1.1 ca-certificates
+RUN apt-get update && apt-get install -y libssl3 ca-certificates
 COPY --from=build /usr/local/cargo/bin/s3-media-endpoint-rs .
 USER 999
 CMD ["./s3-media-endpoint-rs"]
